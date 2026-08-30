@@ -219,6 +219,13 @@ Convenciones críticas:
 7. **Fase 6 — Despliegue**: docker-compose en el homelab (o VPS), Cloudflare wildcard,
    R2, backups `pg_dump`.
 
+### Estado del repositorio
+- Git inicializado (rama `main`) y publicado en GitHub (2026-08-30):
+  **https://github.com/SoyEduinRodriguez/eneleje.com** — **PRIVADO** (pasar a público
+  con `gh repo edit SoyEduinRodriguez/eneleje.com --visibility public --accept-visibility-change-consequences`).
+- Commit inicial: `03aad76` con Fases 0-2. Auditado: sin secretos versionados
+  (`.env.local`, `.eneleje_migrator_pass.txt` y credenciales de prueba solo en local).
+
 ---
 
 ## 6. Cómo retomar una sesión (plantilla)
