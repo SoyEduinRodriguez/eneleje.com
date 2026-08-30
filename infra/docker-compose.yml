@@ -1,0 +1,141 @@
+# =============================================================================
+# eneleje.com · Entorno completo de despliegue
+#
+#   cd infra && cp env.example .env   (editar secretos)
+#   docker compose up -d --build
+#
+# El primer arranque de Postgres auto-aplica db/migrations/* en orden
+# alfabético (000_roles.sh -> 006_seed_dev.sql) vía /docker-entrypoint-initdb.d.
+# =============================================================================
+name: eneleje
+
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/snippets:/etc/nginx/snippets:ro
+      - ./nginx/certs:/etc/nginx/certs:ro        # fullchain.pem + privkey.pem (wildcard)
+      - ./nginx/webroot:/var/www/certbot:ro      # ACME http-01 (dominio raíz)
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/nginx-health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  app:
+    build:
+      context: ..                                 # raíz del repo (código Next.js)
+      dockerfile: infra/Dockerfile
+    restart: unless-stopped
+    # La app NUNCA publica puertos: solo Nginx la alcanza en la red interna.
+    expose:
+      - "3000"
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      # Dentro de la red compose el host de DB/Redis es el nombre del servicio:
+      DATABASE_URL: postgres://eneleje_app:${ENELEJE_APP_DB_PASSWORD}@db:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379
+      ENABLE_SCHEDULER: "true"                    # una sola instancia de app ejecuta el job diario
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks: [internal]
+    # Seguridad: sin capacidades innecesarias
+    read_only: false
+    security_opt:
+      - no-new-privileges:true
+
+  db:
+    image: postgis/postgis:16-3.4-alpine
+    restart: unless-stopped
+    # ⚠ En producción NO publicar 5432. Solo si necesitas psql desde el host:
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-eneleje}
+      POSTGRES_USER: ${POSTGRES_USER:-eneleje}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Define POSTGRES_PASSWORD en infra/.env}
+      # Las consume db/migrations/000_roles.sh:
+      ENELEJE_APP_DB_PASSWORD: ${ENELEJE_APP_DB_PASSWORD:?Define ENELEJE_APP_DB_PASSWORD en infra/.env}
+      ENELEJE_MIGRATOR_DB_PASSWORD: ${ENELEJE_MIGRATOR_DB_PASSWORD:?Define ENELEJE_MIGRATOR_DB_PASSWORD en infra/.env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../db/migrations:/docker-entrypoint-initdb.d:ro   # migraciones en el primer init
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-eneleje} -d ${POSTGRES_DB:-eneleje}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [internal]
+    command:
+      # WAL razonable para el volumen de escrituras de analítica + logs de queries lentas
+      - postgres
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=1536MB
+      - -c
+      - work_mem=16MB
+      - -c
+      - log_min_duration_statement=500
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # AOF: los contadores de analítica sobreviven a reinicios entre flushes.
+    # noeviction: preferimos fallar el INCR (fallback a PG) antes que perder llaves.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - noeviction
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [internal]
+
+  # ─── Opcional (desarrollo): almacenamiento S3-compatible local ────────────
+  # minio:
+  #   image: minio/minio:latest
+  #   command: server /data --console-address ":9001"
+  #   environment:
+  #     MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+  #     MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+  #   volumes: [miniodata:/data]
+  #   networks: [internal]
+
+volumes:
+  pgdata:
+  redisdata:
+  # miniodata:
+
+networks:
+  internal:
+    driver: bridge

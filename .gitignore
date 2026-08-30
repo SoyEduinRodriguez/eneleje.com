@@ -1,0 +1,17 @@
+node_modules/
+.next/
+out/
+build/
+
+# Entorno (secretos locales)
+.env
+.env.local
+.env*.local
+
+# Contraseñas operativas
+.eneleje_migrator_pass.txt
+
+# Misc
+*.tsbuildinfo
+next-env.d.ts
+.DS_Store
